@@ -23,6 +23,8 @@ declare module '@deepseek-ai/cordis' {
 
 type WithDispose<T> = T & { dispose: () => void }
 
+type ScheduleState = { disposed: boolean; trailing: boolean }
+
 // These `any` positions mirror the Host TimerService's overload erasure: generic callback tuples and async-iterator
 // return/rejection values must pass through without narrowing them to one caller's invocation.
 
@@ -155,15 +157,16 @@ export class ClientTimerService extends Service {
   }
 
   /** Build a delayed wrapper whose pending callback belongs to the calling Fiber. */
-  private schedule(label: string, trigger: (args: any[], disposed: boolean) => number | undefined, disposed = false): any {
+  private schedule(label: string, trigger: (args: any[], state: ScheduleState) => number | undefined, noTrailing = false): any {
     let timer: number | undefined
+    const state: ScheduleState = { disposed: false, trailing: !noTrailing }
     const dispose = this.ctx.effect(() => () => {
-      disposed = true
+      state.disposed = true
       globalThis.clearTimeout(timer)
     }, label)
     const wrapper: any = (...args: any[]): void => {
       globalThis.clearTimeout(timer)
-      timer = trigger(args, disposed)
+      timer = trigger(args, state)
     }
     wrapper.dispose = dispose
     return wrapper
@@ -182,11 +185,12 @@ export class ClientTimerService extends Service {
       lastCall = Date.now()
       callback(...args)
     }
-    return this.schedule('ctx.throttle()', (args, disposed) => {
+    return this.schedule('ctx.throttle()', (args, state) => {
+      if (state.disposed) return
       const remaining = delay - Date.now() + lastCall
       if (remaining <= 0) {
         execute(...args as Parameters<F>)
-      } else if (!disposed) {
+      } else if (state.trailing) {
         return globalThis.setTimeout(execute, remaining, ...args)
       }
     }, noTrailing)
@@ -199,8 +203,8 @@ export class ClientTimerService extends Service {
    * @returns Debounced function with an early disposer.
    */
   debounce<F extends (...args: any[]) => void>(callback: F, delay: number): WithDispose<F> {
-    return this.schedule('ctx.debounce()', (args, disposed) => {
-      if (disposed) return
+    return this.schedule('ctx.debounce()', (args, state) => {
+      if (state.disposed) return
       return globalThis.setTimeout(callback, delay, ...args)
     })
   }
