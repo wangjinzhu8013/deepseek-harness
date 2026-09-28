@@ -8,6 +8,8 @@ declare module '@deepseek-ai/cordis' {
 
 type WithDispose<T> = T & { dispose: () => void }
 
+type ScheduleState = { disposed: boolean; trailing: boolean }
+
 /** Disposable timer helpers mixed into Cordis contexts. */
 export class TimerService extends Service {
   constructor(ctx: Context) {
@@ -103,15 +105,16 @@ export class TimerService extends Service {
     }
   }
 
-  private _schedule(label: string, trigger: (args: any[], isDisposed: boolean) => any, isDisposed = false) {
+  private _schedule(label: string, trigger: (args: any[], state: ScheduleState) => any, noTrailing = false) {
     let timer: number | NodeJS.Timeout | undefined
+    const state: ScheduleState = { disposed: false, trailing: !noTrailing }
     const dispose = this.ctx.effect(() => () => {
-      isDisposed = true
+      state.disposed = true
       clearTimeout(timer)
     }, label)
     const wrapper: any = (...args: any[]) => {
       clearTimeout(timer)
-      timer = trigger(args, isDisposed)
+      timer = trigger(args, state)
     }
     wrapper.dispose = dispose
     return wrapper
@@ -124,12 +127,13 @@ export class TimerService extends Service {
       lastCall = Date.now()
       callback(...args)
     }
-    return this._schedule('ctx.throttle()', (args, isDisposed) => {
+    return this._schedule('ctx.throttle()', (args, state) => {
+      if (state.disposed) return
       const now = Date.now()
       const remaining = delay - now + lastCall
       if (remaining <= 0) {
         execute(...args)
-      } else if (!isDisposed) {
+      } else if (state.trailing) {
         return setTimeout(execute, remaining, ...args)
       }
     }, noTrailing)
@@ -137,8 +141,8 @@ export class TimerService extends Service {
 
   /** Return a debounced function whose timer is disposed with the current fiber. */
   debounce<F extends (...args: any[]) => void>(callback: F, delay: number): WithDispose<F> {
-    return this._schedule('ctx.debounce()', (args, isDisposed) => {
-      if (isDisposed) return
+    return this._schedule('ctx.debounce()', (args, state) => {
+      if (state.disposed) return
       return setTimeout(callback, delay, ...args)
     })
   }
